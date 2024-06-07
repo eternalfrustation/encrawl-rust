@@ -1,0 +1,20 @@
+[
+	(
+		domain: "coindesk.com",
+		author_selector: ".at-authors>span>a",
+		content_selector: ".at-text>p",
+		title_selector: ".at-headline>h1",
+	),
+	(
+		domain: "dailycoinpost.com",
+		author_selector: ".reviewer>a",
+		content_selector: ".post-content>div>h4, .post-content>div>p",
+		title_selector: ".post-title",
+	),
+	(
+		domain: "cnbc.com",
+		author_selector: ".Author-authorName",
+		content_selector: ".group>p",
+		title_selector: ".ArticleHeader-headline",
+	)
+]
