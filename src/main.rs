@@ -1,6 +1,11 @@
 use clap::Parser;
 use reqwest::StatusCode;
+use rust_bert::pipelines::sentence_embeddings::{
+    Embedding, SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
+};
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{query, Database, Pool};
 use std::io::prelude::*;
 use std::io::{self, BufReader};
 use std::path::PathBuf;
@@ -114,12 +119,28 @@ struct RedditPost {
     referenced_url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Article {
     title: String,
     url: String,
     content: String,
     author: String,
+}
+
+impl Article {
+    fn get_embedding(&self, model: &SentenceEmbeddingsModel) -> anyhow::Result<Vec<f32>> {
+        Ok(model.encode(&[self.title.clone()])?[0].clone())
+    }
+
+    async fn store(
+        &self,
+        db: Arc<Pool<sqlx::Postgres>>,
+        model: &SentenceEmbeddingsModel,
+    ) -> anyhow::Result<()> {
+        let embedding = self.get_embedding(model)?;
+        sqlx::query("INSERT INTO articles (title, url, content, author, embedding) VALUES ($1, $2, $3, $4, $5)").bind(self.title.clone()).bind(self.url.clone()).bind(self.content.clone()).bind(self.author.clone()).bind(pgvector::Vector::from(embedding)).execute(db.as_ref()).await?;
+        Ok(())
+    }
 }
 
 impl RedditClient {
@@ -204,13 +225,24 @@ impl RedditClient {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     colog::init();
     let args = Args::parse();
-    let reddit_client = RedditClient::new(args.token, args.secret).await?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let mut pool = rt.block_on(
+        PgPoolOptions::new()
+            .max_connections(5)
+            .connect("postgres://postgres:123456789@localhost/encrawl"),
+    )?;
+    rt.block_on(sqlx::query("CREATE EXTENSION IF NOT EXISTS vector").execute(&pool))?;
+    let pool = Arc::new(pool);
+    let reddit_client = rt.block_on(RedditClient::new(args.token, args.secret))?;
     let sub_file = BufReader::new(std::fs::File::open(args.subs).unwrap());
     let scrapers = ScraperConfig::from_file(args.scraper).unwrap();
+    let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL12V2)
+        .create_model()?;
     for line in sub_file.lines().flatten() {
         let mut line = line.split_ascii_whitespace();
         let subreddit = match line.next() {
@@ -224,9 +256,8 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Vec<String>>(),
             None => vec![],
         };
-        for url in reddit_client
-            .get_posts(subreddit.to_string(), flairs)
-            .await?
+        for article in rt
+            .block_on(reddit_client.get_posts(subreddit.to_string(), flairs))?
             .into_iter()
             .map(|post| post.url)
             .filter(|url| !url.contains("reddit.com") && !url.contains("redd.it"))
@@ -246,7 +277,14 @@ async fn main() -> anyhow::Result<()> {
             .flatten()
             .map(|(url, scraper)| scraper.get_article(url))
         {
-            println!("{:?}", url.await.unwrap())
+            rt.block_on(async {
+                article
+                    .await
+                    .unwrap()
+                    .store(pool.clone(), &model)
+                    .await
+                    .unwrap()
+            })
         }
     }
     Ok(())

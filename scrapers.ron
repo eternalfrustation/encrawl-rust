@@ -12,6 +12,12 @@
 		title_selector: ".post-title",
 	),
 	(
+		domain: "dailyhodl.com",
+		author_selector: ".jeg_meta_author>a",
+		content_selector: ".content-inner>p",
+		title_selector: ".jeg_post_title",
+	),
+	(
 		domain: "cnbc.com",
 		author_selector: ".Author-authorName",
 		content_selector: ".group>p",
