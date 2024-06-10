@@ -1,11 +1,13 @@
 use clap::Parser;
+use futures::{StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use rust_bert::pipelines::sentence_embeddings::{
     Embedding, SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{query, Database, Pool};
+use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::prelude::*;
+use sqlx::{query, query_as, Database, FromRow, Pool, Postgres};
 use std::io::prelude::*;
 use std::io::{self, BufReader};
 use std::path::PathBuf;
@@ -119,7 +121,7 @@ struct RedditPost {
     referenced_url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 struct Article {
     title: String,
     url: String,
@@ -138,7 +140,13 @@ impl Article {
         model: &SentenceEmbeddingsModel,
     ) -> anyhow::Result<()> {
         let embedding = self.get_embedding(model)?;
-        sqlx::query("INSERT INTO articles (title, url, content, author, embedding) VALUES ($1, $2, $3, $4, $5)").bind(self.title.clone()).bind(self.url.clone()).bind(self.content.clone()).bind(self.author.clone()).bind(pgvector::Vector::from(embedding)).execute(db.as_ref()).await?;
+        sqlx::query("INSERT INTO articles (title, url, content, author, embedding) VALUES ($1, $2, $3, $4, $5)")
+            .bind(self.title.clone())
+            .bind(self.url.clone())
+            .bind(self.content.clone())
+            .bind(self.author.clone())
+            .bind(pgvector::Vector::from(embedding))
+            .execute(db.as_ref()).await?;
         Ok(())
     }
 }
@@ -224,6 +232,21 @@ impl RedditClient {
             .collect())
     }
 }
+async fn search(
+    db: Arc<Pool<Postgres>>,
+    model: &SentenceEmbeddingsModel,
+    query: String,
+    limit: i32,
+) -> anyhow::Result<Vec<Article>> {
+    let embedding = pgvector::Vector::from(model.encode(&[query])?[0].clone());
+    Ok(sqlx::query_as::<_, Article>(
+        "SELECT title, content, url, author FROM articles ORDER BY embedding <=> $1 LIMIT $2",
+    )
+    .bind(embedding)
+    .bind(limit)
+    .fetch_all(db.as_ref())
+    .await?)
+}
 
 fn main() -> anyhow::Result<()> {
     colog::init();
@@ -231,7 +254,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let mut pool = rt.block_on(
+    let pool = rt.block_on(
         PgPoolOptions::new()
             .max_connections(5)
             .connect("postgres://postgres:123456789@localhost/encrawl"),
@@ -278,14 +301,16 @@ fn main() -> anyhow::Result<()> {
             .map(|(url, scraper)| scraper.get_article(url))
         {
             rt.block_on(async {
-                article
-                    .await
-                    .unwrap()
-                    .store(pool.clone(), &model)
-                    .await
-                    .unwrap()
+                match article.await.unwrap().store(pool.clone(), &model).await {
+                    Ok(_) => {}
+                    Err(e) => log::error!("{}", e),
+                }
             })
         }
     }
+    println!(
+        "{:#?}",
+        rt.block_on(search(pool, &model, String::from("Tax"), 4)).unwrap()
+    );
     Ok(())
 }
