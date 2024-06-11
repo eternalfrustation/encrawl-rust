@@ -1,15 +1,14 @@
+use sqlx::FromRow;
 use clap::Parser;
-use futures::{StreamExt, TryStreamExt};
-use reqwest::StatusCode;
+use encrawl_rust::mamba::{init, TextGeneration};
 use rust_bert::pipelines::sentence_embeddings::{
-    Embedding, SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
+    SentenceEmbeddingsBuilder, SentenceEmbeddingsModel, SentenceEmbeddingsModelType,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::prelude::*;
-use sqlx::{query, query_as, Database, FromRow, Pool, Postgres};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres};
 use std::io::prelude::*;
-use std::io::{self, BufReader};
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -248,6 +247,27 @@ async fn search(
     .await?)
 }
 
+trait Summarisable {
+    fn get_summary(&self, text_generator: &mut TextGeneration) -> anyhow::Result<String>;
+}
+
+impl Summarisable for Vec<Article> {
+    fn get_summary(&self, text_generator: &mut TextGeneration) -> anyhow::Result<String> {
+        let prompt = String::from("You are an conversational AI model designed to create summaries of news given to you on a specific topic. Do NOT use lists, Just output in paragraphs in Markdown.")
+        + &self.into_iter()
+            .enumerate()
+            .map(|(i,a)| 
+                format!("Article: {i}\nTitle: {}\nAuthor: {}\nUrl: {}\nContent: {}\n",
+                    a.title,
+                    a.author,
+                    a.url,
+                    a.content)).collect::<Vec<String>>()
+            .join("\n")
+        +  "User: Summarize the given news. You MUST add the relevant links to the content using markdown links in the format of [<Title>](<Url>).\nResponse: ";
+        text_generator.run(&prompt, 200)
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     colog::init();
     let args = Args::parse();
@@ -310,7 +330,8 @@ fn main() -> anyhow::Result<()> {
     }
     println!(
         "{:#?}",
-        rt.block_on(search(pool, &model, String::from("Tax"), 4)).unwrap()
+        rt.block_on(search(pool, &model, String::from("Tax"), 4))
+            .unwrap().get_summary(&mut init()?)
     );
     Ok(())
 }

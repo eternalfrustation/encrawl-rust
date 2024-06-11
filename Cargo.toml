@@ -5,9 +5,13 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
+candle-core = "0.5.1"
+candle-nn = "0.5.1"
+candle-transformers = "0.5.1"
 clap = { version = "4.5.4", features = ["derive", "string"] }
 colog = "1.3.0"
 futures = "0.3.30"
+hf-hub = "0.3.2"
 log = "0.4.21"
 pgvector = { version = "0.3.2", features = ["postgres", "serde", "sqlx"] }
 regex = { version = "1.10.4", features = ["use_std"] }
@@ -18,4 +22,5 @@ scraper = "0.19.0"
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
 sqlx = { version = "0.7.4", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+tokenizers = "0.19.1"
 tokio = { version = "1.38.0", features = ["full", "rt-multi-thread"] }
