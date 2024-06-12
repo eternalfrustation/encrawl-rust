@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
+axum = { version = "0.7.5", features = ["macros"] }
 candle-core = "0.5.1"
 candle-nn = "0.5.1"
 candle-transformers = "0.5.1"

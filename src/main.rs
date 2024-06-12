@@ -1,3 +1,7 @@
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::Router;
 use sqlx::FromRow;
 use clap::Parser;
 use encrawl_rust::mamba::{init, TextGeneration};
@@ -7,6 +11,7 @@ use rust_bert::pipelines::sentence_embeddings::{
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
+use tokio::sync::Mutex;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -18,6 +23,12 @@ struct ScraperConfig {
     author_selector: String,
     content_selector: String,
     title_selector: String,
+}
+
+
+#[derive(Serialize, Deserialize)]
+struct NewsQuery {
+    topic: String,
 }
 
 impl ScraperConfig {
@@ -233,11 +244,11 @@ impl RedditClient {
 }
 async fn search(
     db: Arc<Pool<Postgres>>,
-    model: &SentenceEmbeddingsModel,
+    model: Arc<Mutex<SentenceEmbeddingsModel>>,
     query: String,
     limit: i32,
 ) -> anyhow::Result<Vec<Article>> {
-    let embedding = pgvector::Vector::from(model.encode(&[query])?[0].clone());
+    let embedding = pgvector::Vector::from(model.lock().await.encode(&[query])?[0].clone());
     Ok(sqlx::query_as::<_, Article>(
         "SELECT title, content, url, author FROM articles ORDER BY embedding <=> $1 LIMIT $2",
     )
@@ -328,10 +339,27 @@ fn main() -> anyhow::Result<()> {
             })
         }
     }
-    println!(
-        "{:#?}",
-        rt.block_on(search(pool, &model, String::from("Tax"), 4))
-            .unwrap().get_summary(&mut init()?)
-    );
+    let server_state = ServerState {
+        embedding_model: Arc::new(Mutex::new(model)),
+        text_generator: Arc::new(Mutex::new(init()?)),
+        db: pool,
+    };
+    let router = Router::new().route("/", get(|| async { "Hello, World!" })).route("/news", get(get_news)).with_state(server_state);
+
+    let listener = rt.block_on(tokio::net::TcpListener::bind("0.0.0.0:3000")).unwrap();
+    rt.block_on(async {axum::serve(listener, router).await}).unwrap();
+
     Ok(())
+}
+
+#[derive(Clone)]
+struct ServerState {
+    embedding_model: Arc<Mutex<SentenceEmbeddingsModel>>,
+    text_generator: Arc<Mutex<TextGeneration>>,
+    db: Arc<Pool<Postgres>>,
+}
+
+#[axum::debug_handler]
+async fn get_news(State(state): State<ServerState>, q: Query<NewsQuery>) -> Result<String,StatusCode > {
+    Ok(search(state.db, state.embedding_model, q.topic.clone(), 5).await.map_err(|e| StatusCode::INTERNAL_SERVER_ERROR)?.get_summary(&mut (*state.text_generator.lock().await)).map_err(|e| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
